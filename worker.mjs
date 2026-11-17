@@ -15,6 +15,7 @@ const norm=x=>typeof x==='string'?x.trim().toLowerCase():'';
 const hex=b=>Array.from(new Uint8Array(b),x=>x.toString(16).padStart(2,'0')).join('');
 const hash=async s=>hex(await crypto.subtle.digest('SHA-256',encoder.encode(s)));
 const good=p=>typeof p==='string'&&p.length>=16&&p.length<=256;
+const goodPassword=p=>good(p)||(typeof p==='string'&&[...p].length===4&&!/\s/u.test(p));
 const COOKIE='__Host-uniopen-demo';
 const cookie=(value,age)=>`${COOKIE}=${value}; Path=/; Max-Age=${age}; Secure; HttpOnly; SameSite=Strict`;
 const tokenFrom=r=>r.headers.get('Cookie')?.match(/(?:^|;\s*)__Host-uniopen-demo=([a-f0-9]{64})(?:;|$)/)?.[1];
@@ -24,7 +25,7 @@ const randomHex=(n=32)=>hex(crypto.getRandomValues(new Uint8Array(n)));
 function loginPage(message='',status=200,register=false,admin=false){
  const nonce=randomHex();
  const action=admin?(register?'/register?admin=1':'/login?admin=1'):(register?'/register':'/login');
- const page=`<!doctype html><html lang="zh-Hant"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>uniopen 聯名卡｜登入</title><style>*{box-sizing:border-box}body{background:#fff;color:#202124;font:16px system-ui;margin:0;padding:24px}main{max-width:410px;margin:8vh auto;border:1px solid #ddd;border-radius:18px;padding:24px}h1{margin:0;font-size:27px}label{display:block;margin:18px 0}input,button{width:100%;font:inherit;padding:12px;margin-top:6px;border:1px solid #999;border-radius:8px}button{background:#202124;color:white}p{line-height:1.6}.msg{color:#981c20}</style><main><h1>uniopen 聯名卡</h1><p>帳務工作台｜公開註冊・示範資料<br><small>五頁籤版 v5.3.1</small></p>${message?`<p class="msg" role="alert">${message}</p>`:''}<form method="post" action="${action}"><input type="hidden" name="csrf" value="${nonce}"><label>Email<input name="email" type="email" autocomplete="username" autocapitalize="none" maxlength="254" required></label>${admin?`<label>管理員密碼<input name="password" type="password" autocomplete="${register?'new-password':'current-password'}" ${register?'minlength="16"':''} maxlength="256" required></label>${register?'<label>管理員設定碼<input name="setup" type="password" autocomplete="off" maxlength="256" required></label>':''}`:'<p>輸入 Email 即可進入示範帳。首次使用會自動建立一般帳號，不需密碼或驗證信。</p>'}<button>${admin?(register?'建立管理員帳號':'管理員登入'):'進入示範帳'}</button></form>${admin?'<p><a href="/">返回一般入口</a></p>':'<p><a href="/login?admin=1">管理員登入</a></p>'}</main></html>`;
+ const page=`<!doctype html><html lang="zh-Hant"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>uniopen 聯名卡｜登入</title><style>*{box-sizing:border-box}body{background:#fff;color:#202124;font:16px system-ui;margin:0;padding:24px}main{max-width:410px;margin:8vh auto;border:1px solid #ddd;border-radius:18px;padding:24px}h1{margin:0;font-size:27px}label{display:block;margin:18px 0}input,button{width:100%;font:inherit;padding:12px;margin-top:6px;border:1px solid #999;border-radius:8px}button{background:#202124;color:white}p{line-height:1.6}.msg{color:#981c20}</style><main><h1>uniopen 聯名卡</h1><p>帳務工作台｜公開註冊・示範資料<br><small>五頁籤版 v5.3.2</small></p>${message?`<p class="msg" role="alert">${message}</p>`:''}<form method="post" action="${action}"><input type="hidden" name="csrf" value="${nonce}"><label>Email<input name="email" type="email" autocomplete="username" autocapitalize="none" maxlength="254" required></label>${admin?`<label>管理員密碼<input name="password" type="password" autocomplete="${register?'new-password':'current-password'}" ${register?'minlength="4"':''} maxlength="256" required></label>${register?'<p>4 字元密碼僅可維護示範帳；需要使用私人帳務，請設定至少 16 字元的密碼。</p>':''}${register?'<label>管理員設定碼<input name="setup" type="password" autocomplete="off" maxlength="256" required></label>':''}`:'<p>輸入 Email 即可進入示範帳。首次使用會自動建立一般帳號，不需密碼或驗證信。</p>'}<button>${admin?(register?'建立管理員帳號':'管理員登入'):'進入示範帳'}</button></form>${admin?'<p><a href="/">返回一般入口</a></p>':'<p><a href="/login?admin=1">管理員登入</a></p>'}</main></html>`;
  return new Response(page,{status,headers:{...headers,'Content-Type':'text/html; charset=utf-8','Set-Cookie':`${nonceName}=${nonce}; Path=/; Max-Age=1800; Secure; HttpOnly; SameSite=Strict`}});
 }
 async function authTables(db){await db.batch([
@@ -66,33 +67,34 @@ export default {async fetch(request, env){
    if(admin&&register){
     const setup=form.get('setup');
     if(!good(env.ADMIN_SETUP_CODE)||env.ADMIN_SETUP_CODE.length<20||!good(setup)||!same(await hash(setup),await hash(env.ADMIN_SETUP_CODE)))return loginPage('管理員設定碼不正確，或尚未設定。',403,true,true);
-    if(!good(pass)||pass===setup)return loginPage('請設定至少 16 字元且不同於設定碼的管理員密碼。',400,true,true);
+    if(!goodPassword(pass)||pass===setup)return loginPage('請設定 4 字元（僅限示範帳），或至少 16 字元的管理員密碼，且不能和設定碼相同。',400,true,true);
     const salt=randomHex(24);
     const result=await db.prepare('INSERT OR IGNORE INTO uni_public_accounts(email,role,salt,digest) VALUES(?,?,?,?)').bind(email,'owner',salt,await passwordDigest(pass,salt)).run();
     if(result.meta.changes!==1)return loginPage('管理員已建立，或這個 Email 已經註冊。',409,true,true);
    }else if(admin){
     const account=await lookup(db,email);
-    if(account?.role!=='owner'||!good(pass)||!same(await passwordDigest(pass,account.salt),account.digest))return loginPage('Email 或管理員密碼不正確。',401,false,true);
+    if(account?.role!=='owner'||!goodPassword(pass)||!same(await passwordDigest(pass,account.salt),account.digest))return loginPage('Email 或管理員密碼不正確。',401,false,true);
    }else{
     await db.prepare('INSERT OR IGNORE INTO uni_public_accounts(email,role,salt,digest) VALUES(?,?,?,?)').bind(email,'viewer','','').run();
     const account=await lookup(db,email);
     if(account?.role!=='viewer')return loginPage('請改用管理員入口登入。',403);
    }
    const session=hex(crypto.getRandomValues(new Uint8Array(32))), age=8*3600;
-   await db.batch([db.prepare('DELETE FROM uni_public_sessions WHERE expires <= ?').bind(now),db.prepare('DELETE FROM uni_public_rate WHERE bucket < ?').bind(bucket),db.prepare('INSERT INTO uni_public_sessions(token,email,expires) VALUES(?,?,?)').bind(await hash(session),email,now+age)]);
+   const sessionHash=(admin&&!good(pass)?'demo:':'')+await hash(session);
+   await db.batch([db.prepare('DELETE FROM uni_public_sessions WHERE expires <= ?').bind(now),db.prepare('DELETE FROM uni_public_rate WHERE bucket < ?').bind(bucket),db.prepare('INSERT INTO uni_public_sessions(token,email,expires) VALUES(?,?,?)').bind(sessionHash,email,now+age)]);
    return redirect('/',cookie(session,age));
   }
   if(request.method==='POST'&&url.pathname==='/logout'){
    if(request.headers.get('Origin')!==url.origin)return err('不允許跨站送出。',403);
-   if(token){await authTables(db);await db.prepare('DELETE FROM uni_public_sessions WHERE token=?').bind(await hash(token)).run();}
+   if(token){await authTables(db);const h=await hash(token);await db.prepare('DELETE FROM uni_public_sessions WHERE token IN (?,?)').bind(h,'demo:'+h).run();}
    return redirect('/',cookie('',0));
   }
-  let role='',email='';
-  if(token){await authTables(db);const a=await db.prepare('SELECT a.email,a.role FROM uni_public_sessions s JOIN uni_public_accounts a ON a.email=s.email WHERE s.token=? AND s.expires>?').bind(await hash(token),now).first();if(a){role=a.role;email=a.email;}}
+  let role='',email='',demoOnly=false;
+  if(token){await authTables(db);const h=await hash(token);const a=await db.prepare('SELECT a.email,a.role,s.token FROM uni_public_sessions s JOIN uni_public_accounts a ON a.email=s.email WHERE s.token IN (?,?) AND s.expires>?').bind(h,'demo:'+h,now).first();if(a){role=a.role;email=a.email;demoOnly=a.token.startsWith('demo:');}}
   if(!role){if(request.method==='GET'&&url.pathname==='/private')return redirect('/login?admin=1');return request.method==='GET'&&url.pathname==='/'?loginPage():err('請先登入。',401);}
   const owner=role==='owner';
   const privateMode=url.pathname==='/private'||url.pathname.startsWith('/private/');
-  if(privateMode&&!owner)return err('僅管理員可存取私人帳務。',403);
+  if(privateMode&&(!owner||demoOnly))return err(demoOnly?'4 字元密碼僅能維護示範帳，無法開啟或匯入私人帳務。':'僅管理員可存取私人帳務。',403);
   const route=privateMode?(url.pathname.slice('/private'.length)||'/'):url.pathname;
   const table=privateMode?'uni_private_v53_workspace':'uni_public_demo_workspace';
   let data=DEMO;
@@ -108,7 +110,7 @@ export default {async fetch(request, env){
    const saved=await db.prepare('SELECT data FROM uni_private_v53_workspace WHERE id=1').first();
    data=saved?JSON.parse(saved.data):null;
   }
-  if(request.method==='GET'&&route==='/')return out(PAGE.replace('__MODE__',privateMode?'private':'demo').replace('__BANNER__',privateMode?'<div class="notice" role="note">管理員私人帳務｜未向公開註冊者分享。</div>':'').replace('__LINK__',privateMode?'<a href="/">返回示範帳</a>':owner?'<a href="/private">管理員私人帳務</a>':''),200,true);
+  if(request.method==='GET'&&route==='/')return out(PAGE.replace('__MODE__',privateMode?'private':'demo').replace('__BANNER__',privateMode?'<div class="notice" role="note">管理員私人帳務｜未向公開註冊者分享。</div>':'').replace('__LINK__',privateMode?'<a href="/">返回示範帳</a>':owner&&!demoOnly?'<a href="/private">管理員私人帳務</a>':''),200,true);
   if(request.method==='GET'&&route==='/api/bootstrap'){
    if(!data)return out({data:null,owner,account:email,changes:{},rev:0});
    const state=await env.DB.prepare(`SELECT rev, changes FROM ${table} WHERE id=1`).first();
