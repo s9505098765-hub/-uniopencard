@@ -9,4 +9,4 @@ keep_vars = true
 [[d1_databases]]
 binding = "DB"
 database_name = "uniopencard-demo"
-database_id = "REPLACE_WITH_D1_DATABASE_ID"
+database_id = "454641b3-0e22-49b4-9e91-3942567c7b54"
