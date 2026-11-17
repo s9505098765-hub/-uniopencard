@@ -11,19 +11,75 @@ async function readBody(request){
  for(;;){const {done,value}=await reader.read();if(done)break;size+=value.byteLength;if(size>750000){await reader.cancel();throw Error();}body+=decoder.decode(value,{stream:true});}
  return JSON.parse(body+decoder.decode());
 }
-export default {async fetch(request, env, ctx){
+const norm=x=>typeof x==='string'?x.trim().toLowerCase():'';
+const hex=b=>Array.from(new Uint8Array(b),x=>x.toString(16).padStart(2,'0')).join('');
+const hash=async s=>hex(await crypto.subtle.digest('SHA-256',encoder.encode(s)));
+const good=p=>typeof p==='string'&&p.length>=16&&p.length<=256;
+const COOKIE='__Host-uniopen-demo';
+const cookie=(value,age)=>`${COOKIE}=${value}; Path=/; Max-Age=${age}; Secure; HttpOnly; SameSite=Strict`;
+const tokenFrom=r=>r.headers.get('Cookie')?.match(/(?:^|;\s*)__Host-uniopen-demo=([a-f0-9]{64})(?:;|$)/)?.[1];
+const redirect=(location,c)=>new Response(null,{status:303,headers:{...headers,Location:location,...(c?{'Set-Cookie':c}:{})}});
+function loginPage(message='',status=200,register=false,admin=false){return out(`<!doctype html><html lang="zh-Hant"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>uniopen 聯名卡｜登入</title><style>*{box-sizing:border-box}body{background:#fff;color:#202124;font:16px system-ui;margin:0;padding:24px}main{max-width:410px;margin:8vh auto;border:1px solid #ddd;border-radius:18px;padding:24px}h1{margin:0;font-size:27px}label{display:block;margin:18px 0}input,button{width:100%;font:inherit;padding:12px;margin-top:6px;border:1px solid #999;border-radius:8px}button{background:#202124;color:white}p{line-height:1.6}.msg{color:#981c20}</style><main><h1>uniopen 聯名卡</h1><p>帳務工作台｜公開註冊・示範資料</p>${message?`<p class="msg" role="alert">${message}</p>`:''}<form method="post" action="${register?(admin?'/register?admin=1':'/register'):'/login'}"><label>Email<input name="email" type="email" autocomplete="username" autocapitalize="none" maxlength="254" required></label><label>密碼<input name="password" type="password" autocomplete="${register?'new-password':'current-password'}" ${register?'minlength="16"':''} maxlength="256" required></label>${admin?'<label>管理員設定碼<input name="setup" type="password" autocomplete="off" maxlength="256" required></label>':''}${register?'<p>請設定至少 16 字元的專用密碼。Email 僅作為登入帳號，不寄驗證信。</p>':''}<button>${register?'建立帳號':'登入'}</button></form><p><a href="${register?'/':'/register'}">${register?'返回登入':'首次註冊'}</a></p></main></html>`,status,true)}
+async function authTables(db){await db.batch([
+ db.prepare("CREATE TABLE IF NOT EXISTS uni_public_accounts (email TEXT PRIMARY KEY, role TEXT NOT NULL CHECK(role IN ('owner','viewer')), salt TEXT NOT NULL, digest TEXT NOT NULL)"),
+ db.prepare('CREATE TABLE IF NOT EXISTS uni_public_sessions (token TEXT PRIMARY KEY, email TEXT NOT NULL, expires INTEGER NOT NULL)'),
+ db.prepare('CREATE TABLE IF NOT EXISTS uni_public_rate (ip TEXT PRIMARY KEY, bucket INTEGER NOT NULL, n INTEGER NOT NULL)'),
+ db.prepare('CREATE TABLE IF NOT EXISTS uni_public_demo_workspace (id INTEGER PRIMARY KEY CHECK(id=1), rev INTEGER NOT NULL, changes TEXT NOT NULL)')
+ ]);await db.batch([
+ db.prepare("CREATE UNIQUE INDEX IF NOT EXISTS uni_public_single_owner ON uni_public_accounts(role) WHERE role='owner'"),
+ db.prepare("INSERT OR IGNORE INTO uni_public_demo_workspace(id,rev,changes) VALUES(1,0,'{}')")
+ ]);}
+const same=(a,b)=>{if(a.length!==b.length)return false;let n=0;for(let i=0;i<a.length;i++)n|=a.charCodeAt(i)^b.charCodeAt(i);return n===0;};
+async function passwordDigest(password,salt){
+ const key=await crypto.subtle.importKey('raw',encoder.encode(password),'PBKDF2',false,['deriveBits']);
+ return hex(await crypto.subtle.deriveBits({name:'PBKDF2',hash:'SHA-256',salt:encoder.encode(salt),iterations:100000},key,256));
+}
+const lookup=(db,email)=>db.prepare('SELECT role,email,salt,digest FROM uni_public_accounts WHERE email=?').bind(email).first();
+const validEmail=e=>e.length<=254&&/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
+export default {async fetch(request, env){
  const url=new URL(request.url);
  try{
-  // The platform supplies this context only after Cloudflare Access authentication.
-  const email=(await ctx.access?.getIdentity())?.email?.trim().toLowerCase();
-  const ownerEmail=env.OWNER_EMAIL?.trim().toLowerCase();
-  const allowed=new Set([ownerEmail,...(env.VIEWER_EMAILS||'').split(',').map(x=>x.trim().toLowerCase()).filter(Boolean)]);
-  if(!email||!ownerEmail||!allowed.has(email))return err('此網站需要經允許的 Email 登入。',403);
-  const owner=email===ownerEmail;
-  if(request.method==='GET'&&url.pathname==='/')return out(PAGE,200,true);
+  const db=env.DB, now=Math.floor(Date.now()/1000), token=tokenFrom(request);
+  const register=url.pathname==='/register', admin=register&&url.searchParams.get('admin')==='1';
+  if(register&&request.method==='GET')return loginPage('',200,true,admin);
+  if(request.method==='POST'&&(register||url.pathname==='/login')){
+   if(request.headers.get('Origin')!==url.origin||!request.headers.get('Content-Type')?.startsWith('application/x-www-form-urlencoded'))return err('不允許跨站送出。',403);
+   const reader=request.body?.getReader();if(!reader)return err('格式錯誤。',400);
+   let raw='',count=0;const decode=new TextDecoder();
+   for(;;){const {done,value}=await reader.read();if(done)break;count+=value.byteLength;if(count>4096){await reader.cancel();return err('格式錯誤。',400)}raw+=decode.decode(value,{stream:true});}
+   const form=new URLSearchParams(raw+decode.decode()), email=norm(form.get('email')), pass=form.get('password');
+   await authTables(db);
+   const bucket=Math.floor(now/900),ip=await hash(request.headers.get('CF-Connecting-IP')||'unknown');
+   const attempt=await db.prepare('INSERT INTO uni_public_rate(ip,bucket,n) VALUES(?,?,1) ON CONFLICT(ip) DO UPDATE SET n=CASE WHEN bucket=excluded.bucket THEN min(n+1,9) ELSE 1 END,bucket=excluded.bucket RETURNING n').bind(ip,bucket).first();
+   if(attempt.n>8)return loginPage('嘗試次數太多，請稍後再試。',429,register,admin);
+   if(register){
+    const setup=form.get('setup');
+    if(admin&&(!good(env.ADMIN_SETUP_CODE)||env.ADMIN_SETUP_CODE.length<20||!good(setup)||!same(await hash(setup),await hash(env.ADMIN_SETUP_CODE))))return loginPage('管理員設定碼不正確，或尚未設定。',403,true,true);
+    if(!validEmail(email)||!good(pass)||(admin&&pass===setup))return loginPage('請輸入有效格式的 Email 和至少 16 字元的專用密碼。',400,true,admin);
+    const salt=hex(crypto.getRandomValues(new Uint8Array(24)));
+    const result=await db.prepare('INSERT OR IGNORE INTO uni_public_accounts(email,role,salt,digest) VALUES(?,?,?,?)').bind(email,admin?'owner':'viewer',salt,await passwordDigest(pass,salt)).run();
+    if(result.meta.changes!==1)return loginPage(admin?'管理員已建立，或這個 Email 已經註冊。':'這個 Email 已經註冊，請返回登入。',409,true,admin);
+    return loginPage('註冊成功，請用剛設定的密碼登入。');
+   }
+   const account=validEmail(email)&&await lookup(db,email);
+   if(!account||!good(pass)||!same(await passwordDigest(pass,account.salt),account.digest))return loginPage('Email 或密碼不正確。',401);
+   const session=hex(crypto.getRandomValues(new Uint8Array(32))), age=8*3600;
+   await db.batch([db.prepare('DELETE FROM uni_public_sessions WHERE expires <= ?').bind(now),db.prepare('DELETE FROM uni_public_rate WHERE bucket < ?').bind(bucket),db.prepare('INSERT INTO uni_public_sessions(token,email,expires) VALUES(?,?,?)').bind(await hash(session),email,now+age)]);
+   return redirect('/',cookie(session,age));
+  }
+  if(request.method==='POST'&&url.pathname==='/logout'){
+   if(request.headers.get('Origin')!==url.origin)return err('不允許跨站送出。',403);
+   if(token){await authTables(db);await db.prepare('DELETE FROM uni_public_sessions WHERE token=?').bind(await hash(token)).run();}
+   return redirect('/',cookie('',0));
+  }
+  let role='',email='';
+  if(token){await authTables(db);const a=await db.prepare('SELECT a.email,a.role FROM uni_public_sessions s JOIN uni_public_accounts a ON a.email=s.email WHERE s.token=? AND s.expires>?').bind(await hash(token),now).first();if(a){role=a.role;email=a.email;}}
+  if(!role)return request.method==='GET'&&url.pathname==='/'?loginPage():err('請先登入。',401);
+  const owner=role==='owner';
+  if(request.method==='GET'&&url.pathname==='/')return out(PAGE.replace('<body>', '<body><div style="padding:9px 14px;border-bottom:1px solid #ddd;background:white;color:#754500;font:600 14px system-ui">公開註冊試用版：任何已註冊帳號都能查看與匯出本頁資料。請勿輸入真實帳務。</div>').replace('</body>','<form method="post" action="/logout" style="position:fixed;right:12px;bottom:calc(10px + env(safe-area-inset-bottom));z-index:8"><button type="submit" style="font:inherit;padding:8px 12px;background:white;border:1px solid #aaa;border-radius:8px">登出</button></form></body>'),200,true);
   if(request.method==='GET'&&url.pathname==='/api/bootstrap'){
    const data=DEMO;
-   const state=await env.DB.prepare('SELECT rev, changes FROM workspace WHERE id=1').first();
+   const state=await env.DB.prepare('SELECT rev, changes FROM uni_public_demo_workspace WHERE id=1').first();
    if(!state)return err('尚未初始化 D1 資料庫。',503);
    return out({data,owner,account:email,changes:JSON.parse(state.changes),rev:state.rev});
   }
@@ -37,9 +93,9 @@ export default {async fetch(request, env, ctx){
     if(!(ids.has(id)||/^local-[a-z0-9-]{1,100}$/.test(id))||!v||Array.isArray(v)||v.id!==id||!['收入','支出'].includes(v.kind)||!statuses[v.kind].includes(v.status)||!['670123','670124'].includes(v.code)||!Number.isFinite(v.amount)||Math.abs(v.amount)>1e12||['label','seller','buyer','inv','date','settle','category'].some(k=>typeof v[k]!=='string')||Object.values(v).some(x=>x!==null&&(typeof x==='string'?x.length>12000:typeof x!=='number'||!Number.isFinite(x))))return err('收支欄位格式不正確。',400);
    }
    const value=JSON.stringify(j.changes);if(encoder.encode(value).byteLength>750000)return err('異動資料已達試用容量。',413);
-   const r=await env.DB.prepare('UPDATE workspace SET rev=rev+1, changes=? WHERE id=1 AND rev=?').bind(value,j.rev).run();
+   const r=await env.DB.prepare('UPDATE uni_public_demo_workspace SET rev=rev+1, changes=? WHERE id=1 AND rev=?').bind(value,j.rev).run();
    return r.meta.changes===1?out({rev:j.rev+1}):err('其他裝置已更新帳務，請重新整理後再編修。',409);
   }
   return err('找不到頁面。',404);
- }catch(e){return err('無法開啟工作台，請檢查 Cloudflare Access 或 D1 設定。',503);}
+ }catch(e){return err('無法開啟工作台，請檢查 Worker 的登入設定與 D1 綁定。',503);}
 }};
