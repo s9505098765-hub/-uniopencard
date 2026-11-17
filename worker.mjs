@@ -13,10 +13,9 @@ async function readBody(request){
 const norm=x=>typeof x==='string'?x.trim().toLowerCase():'';
 const hex=b=>Array.from(new Uint8Array(b),x=>x.toString(16).padStart(2,'0')).join('');
 const hash=async s=>hex(await crypto.subtle.digest('SHA-256',encoder.encode(s)));
-const good=p=>typeof p==='string'&&p.length>=16&&p.length<=256;
-const goodPassword=p=>good(p)||/^\d{4}$/.test(p||'');
+const isPin=p=>typeof p==='string'&&p.length===4&&/^[0-9]{4}$/.test(p);
 const qrAsset=null; // BUILD_QR_ASSET
-const sessionStamp=(env,a)=>hash(JSON.stringify(['v6.3',a.email,a.role,a.digest,a.role==='viewer'?norm(env.VIEWER_EMAIL):null]));
+const sessionStamp=(env,a)=>hash(JSON.stringify(['v6.4',a.email,a.role,a.digest,a.role==='viewer'?norm(env.VIEWER_EMAIL):null]));
 const COOKIE='__Host-uniopen-v6';
 const cookie=(value,age)=>`${COOKIE}=${value}; Path=/; Max-Age=${age}; Secure; HttpOnly; SameSite=Strict`;
 const tokenFrom=r=>r.headers.get('Cookie')?.match(/(?:^|;\s*)__Host-uniopen-v6=([a-f0-9]{64})(?:;|$)/)?.[1];
@@ -26,7 +25,7 @@ const randomHex=(n=32)=>hex(crypto.getRandomValues(new Uint8Array(n)));
 function loginPage(message='',status=200,register=false,admin=false){
  const nonce=randomHex();
  const action=admin?(register?'/register?admin=1':'/login?admin=1'):'/login';
- const page=`<!doctype html><html lang="zh-Hant"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>uniopen 聯名卡｜登入</title><style>*{box-sizing:border-box}body{background:#fff;color:#202124;font:16px system-ui;margin:0;padding:24px}main{max-width:420px;margin:6vh auto;border:1px solid #ddd;border-radius:18px;padding:24px}h1{margin:0;font-size:27px}label{display:block;margin:18px 0}input,button{width:100%;font:inherit;padding:12px;margin-top:6px;border:1px solid #999;border-radius:8px}button{background:#44317c;color:white}p{line-height:1.6}.msg{color:#981c20}</style><main><h1>uniopen 聯名卡</h1><p>共用帳務工作台 · v6.3</p>${message?`<p class="msg" role="alert">${message}</p>`:''}<form method="post" action="${action}"><input type="hidden" name="csrf" value="${nonce}"><label>Email<input name="email" type="email" autocomplete="username" autocapitalize="none" maxlength="254" required></label>${admin?`<label>${register?'設定四位數密碼':'管理員密碼'}<input name="password" type="password" autocomplete="${register?'new-password':'current-password'}" ${register?'inputmode="numeric" pattern="[0-9]{4}" maxlength="4"':'maxlength="256"'} required></label>${register?'<label>首次設定／重設碼<input name="setup" type="password" autocomplete="off" maxlength="256" required></label>':''}`:''}<button>${admin?(register?'設定管理員密碼':'管理員登入'):'登入'}</button></form>${admin?'<p><a href="/">返回登入</a> · <a href="/register?admin=1">首次設定／重設</a></p>':'<p><a href="/login?admin=1">管理員登入</a></p>'}</main></html>`;
+ const page=`<!doctype html><html lang="zh-Hant"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>uniopen 聯名卡｜登入</title><style>*{box-sizing:border-box}body{background:#fff;color:#202124;font:16px system-ui;margin:0;padding:24px}main{max-width:420px;margin:6vh auto;border:1px solid #ddd;border-radius:18px;padding:24px}h1{margin:0;font-size:27px}label{display:block;margin:18px 0}input,button{width:100%;font:inherit;padding:12px;margin-top:6px;border:1px solid #999;border-radius:8px}button{background:#44317c;color:white}p{line-height:1.6}.msg{color:#981c20}</style><main><h1>uniopen 聯名卡</h1><p>共用帳務工作台 · v6.4</p>${message?`<p class="msg" role="alert">${message}</p>`:''}<form method="post" action="${action}"><input type="hidden" name="csrf" value="${nonce}"><label>Email<input name="email" type="email" autocomplete="username" autocapitalize="none" maxlength="254" required></label>${admin?`<label>${register?'設定四位數密碼':'管理員密碼'}<input name="password" type="password" autocomplete="${register?'new-password':'current-password'}" inputmode="numeric" pattern="[0-9]{4}" minlength="4" maxlength="4" required></label>${register?'<label>四位數設定碼<input name="setup" type="password" autocomplete="off" inputmode="numeric" pattern="[0-9]{4}" minlength="4" maxlength="4" required></label>':''}`:''}<button>${admin?(register?'設定管理員密碼':'管理員登入'):'登入'}</button></form>${admin?'<p><a href="/">返回登入</a> · <a href="/register?admin=1">首次設定／重設</a></p>':'<p><a href="/login?admin=1">管理員登入</a></p>'}</main></html>`;
  return new Response(page,{status,headers:{...headers,'Content-Type':'text/html; charset=utf-8','Set-Cookie':`${nonceName}=${nonce}; Path=/; Max-Age=1800; Secure; HttpOnly; SameSite=Strict`}});
 }
 async function authTables(db){await db.batch([
@@ -66,18 +65,19 @@ export default {async fetch(request, env){
    let account;
    if(admin){
     account=await ownerAccount();
-    if(register&&!await rate('owner-setup'))return loginPage('嘗試次數太多，請稍後再試。',429,true,true);
+    if(register&&!await rate('owner-setup',4))return loginPage('嘗試次數太多，請稍後再試。',429,true,true);
     if(register){
      const setup=form.get('setup');
-     if(!(typeof env.ADMIN_SETUP_CODE==='string'&&env.ADMIN_SETUP_CODE.length>=20&&good(env.ADMIN_SETUP_CODE)&&same(await hash(setup||''),await hash(env.ADMIN_SETUP_CODE))))return loginPage('管理員設定碼不正確，或尚未設定。',403,true,true);
-     if(!/^\d{4}$/.test(pass||''))return loginPage('請設定恰好四位數字的密碼。',400,true,true);
+     if(!(isPin(env.ADMIN_SETUP_CODE)&&isPin(setup)&&same(setup,env.ADMIN_SETUP_CODE)))return loginPage('管理員設定碼不正確，或尚未設定。',403,true,true);
+     if(!isPin(pass))return loginPage('請設定恰好四位數字的密碼。',400,true,true);
+     if(same(pass,setup))return loginPage('設定碼和登入密碼請用不同的四位數。',400,true,true);
      if(account&&account.email!==email)return loginPage('已存在管理員，請使用原管理員 Email。',409,true,true);
      const salt=randomHex(24),digest=await passwordDigest(pass,salt);
      const result=await db.prepare("INSERT OR IGNORE INTO uni_public_accounts(email,role,salt,digest) VALUES(?,'owner',?,?) ON CONFLICT(email) DO UPDATE SET role='owner', salt=excluded.salt,digest=excluded.digest WHERE uni_public_accounts.role='owner' OR NOT EXISTS(SELECT 1 FROM uni_public_accounts WHERE role='owner')").bind(email,'p61:'+salt,digest).run();
      if(result.meta.changes!==1)return loginPage('已存在另一個管理員，請使用原管理員 Email。',409,true,true);
      account=await lookup(db,email);
     }else{
-     if(account?.email!==email||!goodPassword(pass))return loginPage('Email 或管理員密碼不正確。',401,false,true);
+     if(account?.email!==email||!isPin(pass))return loginPage('Email 或管理員密碼不正確。',401,false,true);
      if(!await rate('owner-pin',4))return loginPage('嘗試次數太多，請於下一個整點後再試。',429,false,true);
      if(account.salt.startsWith('p6:'))return loginPage('請先點「首次設定／重設」，用原管理員 Email 設定新版密碼。',409,false,true);
      const d=await passwordDigest(pass,account.salt.startsWith('p61:')?account.salt.slice(4):account.salt);
