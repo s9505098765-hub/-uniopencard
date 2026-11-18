@@ -1,1 +1,1 @@
-{"name": "uniopencard-worker", "version": "6.6.2", "private": true, "dependencies": {"jsqr": "1.4.0"}, "scripts": {"build": "node build.mjs"}}
+{"name": "uniopencard-worker", "version": "6.7.0", "private": true, "dependencies": {"jsqr": "1.4.0"}, "scripts": {"build": "node build.mjs"}}
