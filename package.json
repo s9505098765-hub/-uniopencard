@@ -1,6 +1,6 @@
 {
   "name": "uniopencard-worker",
-  "version": "6.8.77",
+  "version": "6.8.78",
   "private": true,
   "dependencies": {
     "jsqr": "1.4.0"
