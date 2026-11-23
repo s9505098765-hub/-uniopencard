@@ -58,7 +58,7 @@ if (matchMedia('(pointer: coarse)').matches) {
   for (const type of ['gesturestart','gesturechange']) document.addEventListener(type,cancel,options);
   for (const type of ['touchstart','touchmove']) document.addEventListener(type,event=>{if(event.touches.length>1)cancel(event);},options);
 }
-</script></head><body><main><h1>uniopen 聯名卡工作區</h1><p>v6.8.72</p>${message?`<p class="msg" role="alert">${message}</p>`:''}<form method="post" action="${action}"><input type="hidden" name="csrf" value="${nonce}"><label>Email<input name="email" type="email" autocomplete="username" autocapitalize="none" maxlength="254" required></label>${admin?`<label>${register?'設定四位數密碼':'管理員密碼'}<input name="password" type="password" autocomplete="${register?'new-password':'current-password'}" inputmode="numeric" pattern="[0-9]{4}" minlength="4" maxlength="4" required></label>${register&&!add?'<label>四位數設定碼<input name="setup" type="password" autocomplete="off" inputmode="numeric" pattern="[0-9]{4}" minlength="4" maxlength="4" required></label>':''}`:''}<button>${add?'新增管理員':admin?(register?'註冊管理員':'管理員登入'):'登入'}</button></form>${add?'<p><a href="/">返回工作台</a></p>':admin?'<p><a href="/">返回登入</a> · <a href="/register?admin=1">註冊管理員</a></p>':'<p><a href="/login?admin=1">管理員登入</a></p>'}</main></html>`;
+</script></head><body><main><h1>uniopen 聯名卡工作區</h1><p>v6.8.74</p>${message?`<p class="msg" role="alert">${message}</p>`:''}<form method="post" action="${action}"><input type="hidden" name="csrf" value="${nonce}"><label>Email<input name="email" type="email" autocomplete="username" autocapitalize="none" maxlength="254" required></label>${admin?`<label>${register?'設定四位數密碼':'管理員密碼'}<input name="password" type="password" autocomplete="${register?'new-password':'current-password'}" inputmode="numeric" pattern="[0-9]{4}" minlength="4" maxlength="4" required></label>${register&&!add?'<label>四位數設定碼<input name="setup" type="password" autocomplete="off" inputmode="numeric" pattern="[0-9]{4}" minlength="4" maxlength="4" required></label>':''}`:''}<button>${add?'新增管理員':admin?(register?'註冊管理員':'管理員登入'):'登入'}</button></form>${add?'<p><a href="/">返回工作台</a></p>':admin?'<p><a href="/">返回登入</a> · <a href="/register?admin=1">註冊管理員</a></p>':'<p><a href="/login?admin=1">管理員登入</a></p>'}</main></html>`;
  return new Response(page,{status,headers:{...headers,'Content-Type':'text/html; charset=utf-8','Set-Cookie':`${nonceName}=${nonce}; Path=/; Max-Age=1800; Secure; HttpOnly; SameSite=Strict`}});
 }
 async function authTables(db){await db.batch([
@@ -305,7 +305,7 @@ export default {async fetch(request, env){
  }
  try{
   const db=env.DB, now=Math.floor(Date.now()/1000), token=tokenFrom(request);
-  if(request.method==='GET'&&url.pathname==='/scanner-status')return out({version:'6.8.72',scanner:qrAsset?'ready':'not_built'});
+  if(request.method==='GET'&&url.pathname==='/scanner-status')return out({version:'6.8.74',scanner:qrAsset?'ready':'not_built'});
   if(request.method==='GET'&&url.pathname==='/assets/jsqr-v661.js')return qrAsset?new Response(qrAsset,{headers:{'Content-Type':'application/javascript; charset=utf-8','X-Content-Type-Options':'nosniff','Cache-Control':'no-store'}}):err('掃描器尚未建置。',503);
   const register=url.pathname==='/register', login=url.pathname==='/login', admin=(register||login)&&url.searchParams.get('admin')==='1';
   const add=url.pathname==='/admin/add';
